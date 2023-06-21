@@ -19,7 +19,7 @@ class RoadObject(ABC):
     For now we assume all objects are rectangular.
     """
 
-    LENGTH: float = 2  # Object length [m]
+    LENGTH: float = 5  # Object length [m]
     WIDTH: float = 2  # Object width [m]
 
     def __init__(self, road: 'Road', position: Sequence[float], heading: float = 0, speed: float = 0):
