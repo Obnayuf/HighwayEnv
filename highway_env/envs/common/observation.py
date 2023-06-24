@@ -143,7 +143,7 @@ class KinematicObservation(ObservationType):
 
     def __init__(self, env: 'AbstractEnv',
                  features: List[str] = None,
-                 vehicles_count: int = 5,
+                 vehicles_count: int = 10,
                  features_range: Dict[str, List[float]] = None,
                  absolute: bool = False,
                  order: str = "sorted",
@@ -151,7 +151,6 @@ class KinematicObservation(ObservationType):
                  clip: bool = True,
                  see_behind: bool = False,
                  observe_intentions: bool = False,
-                 include_obstacles: bool = True,
                  **kwargs: dict) -> None:
         """
         :param env: The environment to observe
@@ -175,7 +174,6 @@ class KinematicObservation(ObservationType):
         self.clip = clip
         self.see_behind = see_behind
         self.observe_intentions = observe_intentions
-        self.include_obstacles = include_obstacles
 
     def space(self) -> spaces.Space:
         return spaces.Box(shape=(self.vehicles_count, len(self.features)), low=-np.inf, high=np.inf, dtype=np.float32)
@@ -207,23 +205,19 @@ class KinematicObservation(ObservationType):
             return np.zeros(self.space().shape)
 
         # Add ego-vehicle
-        df = pd.DataFrame.from_records([self.observer_vehicle.to_dict()])
+        df = pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[self.features]
         # Add nearby traffic
-        close_vehicles = self.env.road.close_objects_to(self.observer_vehicle,
-                                                        self.env.PERCEPTION_DISTANCE,
-                                                        count=self.vehicles_count - 1,
-                                                        see_behind=self.see_behind,
-                                                        sort=self.order == "sorted",
-                                                        vehicles_only=not self.include_obstacles)
+        close_vehicles = self.env.road.close_vehicles_to(self.observer_vehicle,
+                                                         self.env.PERCEPTION_DISTANCE,
+                                                         count=self.vehicles_count - 1,
+                                                         see_behind=self.see_behind,
+                                                         sort=self.order == "sorted")
         if close_vehicles:
             origin = self.observer_vehicle if not self.absolute else None
-            vehicles_df = pd.DataFrame.from_records(
+            df = pd.concat([df, pd.DataFrame.from_records(
                 [v.to_dict(origin, observe_intentions=self.observe_intentions)
-                 for v in close_vehicles[-self.vehicles_count + 1:]])
-            df = pd.concat([df, vehicles_df], ignore_index=True)
-
-        df = df[self.features]
-
+                 for v in close_vehicles[-self.vehicles_count + 1:]])[self.features]],
+                           ignore_index=True)
         # Normalize and clip
         if self.normalize:
             df = self.normalize_obs(df)
@@ -438,6 +432,12 @@ class KinematicsGoalObservation(KinematicObservation):
             return spaces.Space()
 
     def observe(self) -> Dict[str, np.ndarray]:
+        all_vehicles = self.env.road.vehicles
+        other_car = [0] * self.vehicles_count
+        for i in range(1,len(all_vehicles)):
+            localization = all_vehicles[i].position
+            distance = np.sqrt(localization[0]**2+localization[1]**2)
+            other_car[i-1] = 10/distance
         if not self.observer_vehicle:
             return OrderedDict([
                 ("observation", np.zeros((len(self.features),))),
@@ -445,11 +445,12 @@ class KinematicsGoalObservation(KinematicObservation):
                 ("desired_goal", np.zeros((len(self.features),)))
             ])
 
-        obs = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[self.features])
+        old_obs = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[self.features])
+        obs = np.concatenate((old_obs/ self.scales,np.array(other_car)))
         goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[self.features])
         obs = OrderedDict([
-            ("observation", obs / self.scales),
-            ("achieved_goal", obs / self.scales),
+            ("observation", obs),
+            ("achieved_goal", old_obs / self.scales),
             ("desired_goal", goal / self.scales)
          ])
         return obs
@@ -601,12 +602,10 @@ class LidarObservation(ObservationType):
             corners = utils.rect_corners(obstacle.position, obstacle.LENGTH, obstacle.WIDTH, obstacle.heading)
             angles = [self.position_to_angle(corner, origin) for corner in corners]
             min_angle, max_angle = min(angles), max(angles)
-            if min_angle < -np.pi/2 < np.pi/2 < max_angle:  # Object's corners are wrapping around +pi
-                min_angle, max_angle = max_angle, min_angle + 2*np.pi
             start, end = self.angle_to_index(min_angle), self.angle_to_index(max_angle)
             if start < end:
                 indexes = np.arange(start, end+1)
-            else:  # Object's corners are wrapping around 0
+            else:
                 indexes = np.hstack([np.arange(start, self.cells), np.arange(0, end + 1)])
 
             # Actual distance computation for these sections
