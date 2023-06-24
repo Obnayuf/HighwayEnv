@@ -13,6 +13,7 @@ from highway_env.vehicle.kinematics import Vehicle
 from highway_env.vehicle.objects import Landmark, Obstacle
 
 
+
 class GoalEnv(Env):
     """
     Interface for A goal-based environment.
@@ -94,12 +95,12 @@ class ParkingEnv(AbstractEnv, GoalEnv):
             "simulation_frequency": 15,
             "policy_frequency": 5,
             "duration": 100,
-            "screen_width": 600,
-            "screen_height": 300,
+            "screen_width": 1000,
+            "screen_height": 1000,
             "centering_position": [0.5, 0.5],
             "scaling": 7,
             "controlled_vehicles": 1,
-            "vehicles_count": 0,
+            "vehicles_count": 10,
             "add_walls": True
         })
         return config
@@ -148,8 +149,6 @@ class ParkingEnv(AbstractEnv, GoalEnv):
 
     def _create_vehicles(self) -> None:
         """Create some new random vehicles of a given type, and add them on the road."""
-        empty_spots = list(self.road.network.lanes_dict().keys())
-
         # Controlled vehicles
         self.controlled_vehicles = []
         for i in range(self.config["controlled_vehicles"]):
@@ -157,27 +156,25 @@ class ParkingEnv(AbstractEnv, GoalEnv):
             vehicle.color = VehicleGraphics.EGO_COLOR
             self.road.vehicles.append(vehicle)
             self.controlled_vehicles.append(vehicle)
-            empty_spots.remove(vehicle.lane_index)
 
         # Goal
-        lane_index = empty_spots[self.np_random.choice(np.arange(len(empty_spots)))]
-        lane = self.road.network.get_lane(lane_index)
+        lane = self.np_random.choice(self.road.network.lanes_list())
         self.goal = Landmark(self.road, lane.position(lane.length/2, 0), heading=lane.heading)
         self.road.objects.append(self.goal)
-        empty_spots.remove(lane_index)
 
         # Other vehicles
         for i in range(self.config["vehicles_count"]):
-            if not empty_spots:
-                continue
-            lane_index = empty_spots[self.np_random.choice(np.arange(len(empty_spots)))]
-            v = Vehicle.make_on_lane(self.road, lane_index, 4, speed=0)
+            lane = ("a", "b", i) if self.np_random.uniform() >= 0.5 else ("b", "c", i)
+            v = Vehicle.make_on_lane(self.road, lane, 4, speed=0)
             self.road.vehicles.append(v)
-            empty_spots.remove(lane_index)
-
+        for v in self.road.vehicles:  # Prevent early collisions
+            if v is not self.vehicle and (
+                    np.linalg.norm(v.position - self.goal.position) < 1 or
+                    np.linalg.norm(v.position - self.vehicle.position) < 1): # change 20 to 1 , to create more complex env
+                self.road.vehicles.remove(v)
         # Walls
         if self.config['add_walls']:
-            width, height = 70, 42
+            width, height = 70, 42    # the yellow boundary , outside wall 
             for y in [-height / 2, height / 2]:
                 obstacle = Obstacle(self.road, [0, y])
                 obstacle.LENGTH, obstacle.WIDTH = (width, 1)
@@ -234,3 +231,5 @@ class ParkingEnvActionRepeat(ParkingEnv):
 class ParkingEnvParkedVehicles(ParkingEnv):
     def __init__(self):
         super().__init__({"vehicles_count": 10})
+
+
