@@ -203,7 +203,6 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         :param p: the Lp^p norm used in the reward. Use p<1 to have high kurtosis for rewards in [0, 1]
         :return: the corresponding reward
         """
-        print("hello")
         return -np.power(np.dot(np.abs(achieved_goal - desired_goal), np.array(self.config["reward_weights"])), p)
 
     def _reward(self, action: np.ndarray) -> float:
