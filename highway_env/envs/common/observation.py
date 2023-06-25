@@ -439,7 +439,7 @@ class KinematicsGoalObservation(KinematicObservation):
         for i in range(1,len(all_vehicles)):
             localization = all_vehicles[i].position
             distance = np.sqrt((localization[0]-ego_position[0])**2+(localization[1]-ego_position[1])**2)
-            other_car[i-1] = 10/distance
+            other_car[i-1] = 0.5/distance
         if not self.observer_vehicle:
             return OrderedDict([
                 ("observation", np.zeros((len(self.features),))),
