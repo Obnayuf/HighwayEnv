@@ -136,7 +136,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         width = 4.0
         lt = (LineType.CONTINUOUS, LineType.CONTINUOUS)
         x_offset = 0
-        y_offset = 10
+        y_offset = 4  # origin size = 10
         length = 8
         for k in range(spots):
             x = (k + 1 - spots // 2) * (width + x_offset) - width / 2
@@ -157,14 +157,19 @@ class ParkingEnv(AbstractEnv, GoalEnv):
             self.road.vehicles.append(vehicle)
             self.controlled_vehicles.append(vehicle)
 
-        # Goal
+        # Goal 
         lane = self.np_random.choice(self.road.network.lanes_list())
         self.goal = Landmark(self.road, lane.position(lane.length/2, 0), heading=lane.heading)
         self.road.objects.append(self.goal)
+        road_num = len(self.road.network.lanes_list())
 
+        vehicle_list = np.random.choice(road_num,size = self.config["vehicles_count"],replace=False)
         # Other vehicles
-        for i in range(self.config["vehicles_count"]):
-            lane = ("a", "b", i) if self.np_random.uniform() >= 0.5 else ("b", "c", i)
+        for i in vehicle_list:
+            if i<road_num//2:
+                lane = ("a", "b", i)
+            else:
+                lane = ("b", "c", i-road_num//2)
             v = Vehicle.make_on_lane(self.road, lane, 4, speed=0)
             self.road.vehicles.append(v)
         for v in self.road.vehicles:  # Prevent early collisions
