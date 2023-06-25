@@ -432,11 +432,13 @@ class KinematicsGoalObservation(KinematicObservation):
             return spaces.Space()
 
     def observe(self) -> Dict[str, np.ndarray]:
+        old_obs = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[self.features])
+        ego_position = (old_obs[0],old_obs[1])
         all_vehicles = self.env.road.vehicles
         other_car = [0] * self.vehicles_count
         for i in range(1,len(all_vehicles)):
             localization = all_vehicles[i].position
-            distance = np.sqrt(localization[0]**2+localization[1]**2)
+            distance = np.sqrt((localization[0]-ego_position[0])**2+(localization[1]-ego_position[1])**2)
             other_car[i-1] = 10/distance
         if not self.observer_vehicle:
             return OrderedDict([
@@ -445,7 +447,6 @@ class KinematicsGoalObservation(KinematicObservation):
                 ("desired_goal", np.zeros((len(self.features),)))
             ])
 
-        old_obs = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[self.features])
         obs = np.concatenate((old_obs/ self.scales,np.array(other_car)))
         goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[self.features])
         obs = OrderedDict([
