@@ -79,11 +79,19 @@ class ParkingEnv(AbstractEnv, GoalEnv):
     def default_config(cls) -> dict:
         config = super().default_config()
         config.update({
+            # "observation": {
+            #     "type": "KinematicsGoal",
+            #     "features": ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h'],
+            #     "scales": [100, 100, 5, 5, 1, 1],
+            #     "normalize": False
             "observation": {
-                "type": "KinematicsGoal",
-                "features": ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h'],
-                "scales": [100, 100, 5, 5, 1, 1],
-                "normalize": False
+                "type": "OccupancyGrid",
+                "features": ['presence'],
+                "grid_size": [[-25, 25], [-40, 40]],
+                "grid_step": [0.1, 0.1],
+                "as_image": False,
+                "align_to_vehicle_axes": False,
+                "clip": False,
             },
             "action": {
                 "type": "ContinuousAction"
@@ -152,6 +160,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         # Controlled vehicles
         self.controlled_vehicles = []
         for i in range(self.config["controlled_vehicles"]):
+            # 2*np.pi*self.np_random.uniform()
             vehicle = self.action_type.vehicle_class(self.road, [i*20, 0], 2*np.pi*self.np_random.uniform(), 0)
             vehicle.color = VehicleGraphics.EGO_COLOR
             self.road.vehicles.append(vehicle)

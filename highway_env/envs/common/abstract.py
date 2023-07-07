@@ -67,8 +67,7 @@ class AbstractEnv(gym.Env):
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
         self.enable_auto_render = False
-
-        self.reset()
+        #self.reset()  if not implement it is hard to check our env
 
     @property
     def vehicle(self) -> Vehicle:
@@ -102,7 +101,7 @@ class AbstractEnv(gym.Env):
             "screen_height": 150,  # [px]
             "centering_position": [0.3, 0.5],
             "scaling": 5.5,
-            "show_trajectories": False,
+            "show_trajectories": True,
             "render_agent": True,
             "offscreen_rendering": os.environ.get("OFFSCREEN_RENDERING", "0") == "1",
             "manual_control": False,
@@ -232,6 +231,7 @@ class AbstractEnv(gym.Env):
             raise NotImplementedError("The road and vehicle must be initialized in the environment implementation")
 
         self.time += 1 / self.config["policy_frequency"]
+
         self._simulate(action)
 
         obs = self.observation_type.observe()

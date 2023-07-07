@@ -1,9 +1,11 @@
 from collections import OrderedDict
 from itertools import product
 from typing import List, Dict, TYPE_CHECKING, Optional, Union, Tuple
+from shapely.geometry import Point, Polygon
 from gymnasium import spaces
 import numpy as np
 import pandas as pd
+import math
 
 from highway_env import utils
 from highway_env.envs.common.finite_mdp import compute_ttc_grid
@@ -239,8 +241,8 @@ class OccupancyGridObservation(ObservationType):
     """Observe an occupancy grid of nearby vehicles."""
 
     FEATURES: List[str] = ['presence', 'vx', 'vy', 'on_road']
-    GRID_SIZE: List[List[float]] = [[-5.5*5, 5.5*5], [-5.5*5, 5.5*5]]
-    GRID_STEP: List[int] = [5, 5]
+    GRID_SIZE: List[List[float]] = [[-35*1, 35*1], [-21*1, 21*1]]
+    GRID_STEP: List[int] = [1, 1]
 
     def __init__(self,
                  env: 'AbstractEnv',
@@ -268,14 +270,16 @@ class OccupancyGridObservation(ObservationType):
         self.features = features if features is not None else self.FEATURES
         self.grid_size = np.array(grid_size) if grid_size is not None else np.array(self.GRID_SIZE)
         self.grid_step = np.array(grid_step) if grid_step is not None else np.array(self.GRID_STEP)
-        grid_shape = np.asarray(np.floor((self.grid_size[:, 1] - self.grid_size[:, 0]) / self.grid_step),
-                                dtype=np.uint8)
+        grid_shape = np.asarray(np.floor((self.grid_size[:, 1] - self.grid_size[:, 0]) / self.grid_step),dtype=int)
         self.grid = np.zeros((len(self.features), *grid_shape))
         self.features_range = features_range
         self.absolute = absolute
         self.align_to_vehicle_axes = align_to_vehicle_axes
         self.clip = clip
         self.as_image = as_image
+        self.is_initialized = False
+        self.scales = [100, 100, 5, 5, 1, 1]
+        self.tmp = None
 
     def space(self) -> spaces.Space:
         if self.as_image:
@@ -300,48 +304,190 @@ class OccupancyGridObservation(ObservationType):
                 df[feature] = utils.lmap(df[feature], [f_range[0], f_range[1]], [-1, 1])
         return df
 
-    def observe(self) -> np.ndarray:
+    def rotate(self,x2,y2,x1,y1,theta):
+        # 2 是原点，1是p
+        if theta>=0 and theta<2*np.pi:
+            x= (x1 - x2)*np.cos(theta) - (y1 - y2)*np.sin(theta) + x2
+            y= (x1 - x2)*np.sin(theta) + (y1 - y2)*np.cos(theta) + y2
+            return (x,y)
+        else:
+            theta = theta %(2*np.pi)
+            x= (x1 - x2)*np.cos(theta) - (y1 - y2)*np.sin(theta) + x2
+            y= (x1 - x2)*np.sin(theta) + (y1 - y2)*np.cos(theta) + y2
+            return (x,y)
+
+    def quzheng(unknown,x):
+        if x<0:
+            return math.floor(x)
+        else:
+            return 1+math.floor(x)
+        
+    def handle_grid(self,x,y,theta):
+        #平移
+        #order：左上，左下，右上，右下 顺时针
+        p1 = (x-2,y-1)
+        p2 = (x+2,y-1)
+        p3 = (x+2,y+1)
+        p4 = (x-2,y+1)
+
+        # 旋转
+        p1_new = self.rotate(x,y,p1[0],p1[1],theta)
+        p2_new = self.rotate(x,y,p2[0],p2[1],theta)
+        p3_new = self.rotate(x,y,p3[0],p3[1],theta)
+        p4_new = self.rotate(x,y,p4[0],p4[1],theta)
+        pologon = Polygon([p1_new,p2_new,p3_new,p4_new])
+        k = self.grid_size[0]
+
+        #找到框住egocar的框
+        x_list = [p1_new[0],p2_new[0],p3_new[0],p4_new[0]]
+        y_list = [p1_new[1],p2_new[1],p3_new[1],p4_new[1]]
+        xmin = int(self.quzheng(min(x_list)))
+        xmax = int(self.quzheng(max(x_list)))
+        ymin = int(self.quzheng(min(y_list)))
+        ymax = int(self.quzheng(max(y_list)))
+        #pdb.set_trace()
+        tmp = []
+        for x in np.arange(xmin,xmax+1,0.1):
+            for y in np.arange(ymin,ymax+1,0.1):
+                #pdb.set_trace()
+                x_ = round(x,1)
+                y_ = round(y,1)
+                point = Point(x,y)
+                if pologon.contains(point):
+                    x_ = 400 + int(x_*10)
+                    y_ = 250 + int(y_*10)
+                    self.grid[0,y_,x_] = 2
+                    tmp.append((x_,y_))
+        return tmp
+    
+    def initialize(self):
+        self.grid.fill(np.nan)
+        # Get nearby traffic data
+        df = pd.DataFrame.from_records(
+                [v.to_dict() for v in self.env.road.vehicles])
+        # Normalize
+        df = self.normalize(df)
+        for i in range(-210,211):
+            self.grid[0,250+i,50] = 1
+            self.grid[0,250+i,750] = 1
+        for i in range(-350,351):
+            self.grid[0,-210+250,i+400] = 1
+            self.grid[0,210+250,i+400] = 1
+
+        row = 4/self.grid_step[0]
+        col = 2/self.grid_step[0]
+
+        for layer, feature in enumerate(self.features):
+                if feature in df.columns:  # A vehicle feature
+                    for i, vehicle in df[::-1].iterrows():
+                        if i>0:
+                            x, y = vehicle["x"], vehicle["y"]
+                            # Recover unnormalized coordinates for cell index
+                            if "x" in self.features_range:
+                                x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
+                            if "y" in self.features_range:
+                                y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
+                            cell = self.pos_to_index((x, y), relative=False)
+                            #pdb.set_trace()
+                            if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+                                for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
+                                    for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
+                                            if i<500 and j<800: 
+                                                self.grid[layer,i,j] = vehicle[feature]
+
+
+        centerx = self.env.road.objects[0].to_dict()["x"]
+        centery = self.env.road.objects[0].to_dict()["y"]
+        cell = self.pos_to_index((centerx, centery), relative=False)
+        if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+            for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
+                for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
+                        if i<500 and j<800: 
+                            self.grid[layer,i,j] = -1
+        self.is_initialized = True
+    
+    def recover(self,tmp):
+        if tmp is not None:
+            for hh in tmp:
+                self.grid[0,hh[1],hh[0]] = 0
+        
+
+    def observe(self) -> np.ndarray:                 
         if not self.env.road:
             return np.zeros(self.space().shape)
+        if not self.is_initialized:
+            self.initialize()
+        self.recover(self.tmp)
+        ego = self.env.road.vehicles[0].to_dict()
+        x, y ,yaw = ego["x"], ego["y"], ego["heading"]
+        self.tmp = self.handle_grid(x,y,yaw)
+        # handle ego car
 
-        if self.absolute:
-            raise NotImplementedError()
-        else:
-            # Initialize empty data
-            self.grid.fill(np.nan)
+        # if self.absolute:
+        #     raise NotImplementedError()
+        # else:
+        #     # Initialize empty data
+        #     self.grid.fill(np.nan)
+        #     #pdb.set_trace()
+        #     # Get nearby traffic data
+        #     df = pd.DataFrame.from_records(
+        #         [v.to_dict() for v in self.env.road.vehicles])
+        #     # Normalize
+        #     df = self.normalize(df)
+            
+        #     #pdb.set_trace()
+        #     # Fill-in features
+        #     #wall from -35 to 35 and -21 to 21
+        #     for i in range(-210,211):
+        #         self.grid[0,250+i,50] = 1
+        #         self.grid[0,250+i,750] = 1
+        #     for i in range(-350,351):
+        #         self.grid[0,-210+250,i+400] = 1
+        #         self.grid[0,210+250,i+400] = 1
+        #     for layer, feature in enumerate(self.features):
+        #         if feature in df.columns:  # A vehicle feature
+        #             for i, vehicle in df[::-1].iterrows():
+        #                 if i==0:
+        #                     x, y ,yaw = vehicle["x"], vehicle["y"], vehicle["heading"]
+        #                     self.handle_grid(x,y,yaw)
+                            
+        #                 if i>0:
+        #                     x, y = vehicle["x"], vehicle["y"]
+        #                     # Recover unnormalized coordinates for cell index
+        #                     if "x" in self.features_range:
+        #                         x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
+        #                     if "y" in self.features_range:
+        #                         y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
+        #                     cell = self.pos_to_index((x, y), relative=False)
+        #                     #pdb.set_trace()
+        #                     if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+        #                         row = 4/self.grid_step[0]
+        #                         col = 2/self.grid_step[0]
+        #                         for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
+        #                             for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
+        #                                     if i<500 and j<800: 
+        #                                         self.grid[layer,i,j] = vehicle[feature]
+        #         elif feature == "on_road":
+        #             self.fill_road_layer_by_lanes(layer)
 
-            # Get nearby traffic data
-            df = pd.DataFrame.from_records(
-                [v.to_dict(self.observer_vehicle) for v in self.env.road.vehicles])
-            # Normalize
-            df = self.normalize(df)
-            # Fill-in features
-            for layer, feature in enumerate(self.features):
-                if feature in df.columns:  # A vehicle feature
-                    for _, vehicle in df[::-1].iterrows():
-                        x, y = vehicle["x"], vehicle["y"]
-                        # Recover unnormalized coordinates for cell index
-                        if "x" in self.features_range:
-                            x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
-                        if "y" in self.features_range:
-                            y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
-                        cell = self.pos_to_index((x, y), relative=not self.absolute)
-                        if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
-                            self.grid[layer, cell[1], cell[0]] = vehicle[feature]
-                elif feature == "on_road":
-                    self.fill_road_layer_by_lanes(layer)
+        obs = self.grid
 
-            obs = self.grid
+        if self.clip:
+            obs = np.clip(obs, -1, 1)
 
-            if self.clip:
-                obs = np.clip(obs, -1, 1)
-
-            if self.as_image:
-                obs = ((np.clip(obs, -1, 1) + 1) / 2 * 255).astype(np.uint8)
-
-            obs = np.nan_to_num(obs).astype(self.space().dtype)
-
-            return obs
+        if self.as_image:
+            obs = ((np.clip(obs, -1, 1) + 1) / 2 * 255).astype(np.uint8)
+        feature = ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h']                      
+        obs_state = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[feature])
+        goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[feature])
+        obs_map = np.nan_to_num(obs).astype(self.space().dtype)
+        obs = OrderedDict([
+            ("map_observation",obs_map),
+            ("observation", obs_state / self.scales),
+            ("achieved_goal", obs_state / self.scales),
+            ("desired_goal", goal / self.scales)
+         ])
+        return obs
 
     def pos_to_index(self, position: Vector, relative: bool = False) -> Tuple[int, int]:
         """
@@ -358,8 +504,8 @@ class OccupancyGridObservation(ObservationType):
         if self.align_to_vehicle_axes:
             c, s = np.cos(self.observer_vehicle.heading), np.sin(self.observer_vehicle.heading)
             position = np.array([[c, s], [-s, c]]) @ position
-        return int(np.floor((position[0] - self.grid_size[0, 0]) / self.grid_step[0])),\
-               int(np.floor((position[1] - self.grid_size[1, 0]) / self.grid_step[1]))
+        return int(np.floor((position[0] - self.grid_size[1, 0]) / self.grid_step[0])),\
+               int(np.floor((position[1] - self.grid_size[0, 0]) / self.grid_step[1]))
 
     def index_to_pos(self, index: Tuple[int, int]) -> np.ndarray:
 
@@ -655,3 +801,186 @@ def observation_factory(env: 'AbstractEnv', config: dict) -> ObservationType:
         return ExitObservation(env, **config)
     else:
         raise ValueError("Unknown observation type")
+
+
+
+
+# class OccupancyGridObservation(ObservationType):
+
+#     """Observe an occupancy grid of nearby vehicles."""
+
+#     FEATURES: List[str] = ['presence', 'vx', 'vy', 'on_road']
+#     GRID_SIZE: List[List[float]] = [[-5.5*5, 5.5*5], [-5.5*5, 5.5*5]]
+#     GRID_STEP: List[int] = [5, 5]
+
+#     def __init__(self,
+#                  env: 'AbstractEnv',
+#                  features: Optional[List[str]] = None,
+#                  grid_size: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None,
+#                  grid_step: Optional[Tuple[float, float]] = None,
+#                  features_range: Dict[str, List[float]] = None,
+#                  absolute: bool = False,
+#                  align_to_vehicle_axes: bool = False,
+#                  clip: bool = True,
+#                  as_image: bool = False,
+#                  **kwargs: dict) -> None:
+#         """
+#         :param env: The environment to observe
+#         :param features: Names of features used in the observation
+#         :param grid_size: real world size of the grid [[min_x, max_x], [min_y, max_y]]
+#         :param grid_step: steps between two cells of the grid [step_x, step_y]
+#         :param features_range: a dict mapping a feature name to [min, max] values
+#         :param absolute: use absolute or relative coordinates
+#         :param align_to_vehicle_axes: if True, the grid axes are aligned with vehicle axes. Else, they are aligned
+#                with world axes.
+#         :param clip: clip the observation in [-1, 1]
+#         """
+#         super().__init__(env)
+#         self.features = features if features is not None else self.FEATURES
+#         self.grid_size = np.array(grid_size) if grid_size is not None else np.array(self.GRID_SIZE)
+#         self.grid_step = np.array(grid_step) if grid_step is not None else np.array(self.GRID_STEP)
+#         grid_shape = np.asarray(np.floor((self.grid_size[:, 1] - self.grid_size[:, 0]) / self.grid_step),
+#                                 dtype=np.uint8)
+#         self.grid = np.zeros((len(self.features), *grid_shape))
+#         self.features_range = features_range
+#         self.absolute = absolute
+#         self.align_to_vehicle_axes = align_to_vehicle_axes
+#         self.clip = clip
+#         self.as_image = as_image
+
+#     def space(self) -> spaces.Space:
+#         if self.as_image:
+#             return spaces.Box(shape=self.grid.shape, low=0, high=255, dtype=np.uint8)
+#         else:
+#             return spaces.Box(shape=self.grid.shape, low=-np.inf, high=np.inf, dtype=np.float32)
+
+#     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
+#         """
+#         Normalize the observation values.
+
+#         For now, assume that the road is straight along the x axis.
+#         :param Dataframe df: observation data
+#         """
+#         if not self.features_range:
+#             self.features_range = {
+#                 "vx": [-2*Vehicle.MAX_SPEED, 2*Vehicle.MAX_SPEED],
+#                 "vy": [-2*Vehicle.MAX_SPEED, 2*Vehicle.MAX_SPEED]
+#             }
+#         for feature, f_range in self.features_range.items():
+#             if feature in df:
+#                 df[feature] = utils.lmap(df[feature], [f_range[0], f_range[1]], [-1, 1])
+#         return df
+
+#     def observe(self) -> np.ndarray:
+#         if not self.env.road:
+#             return np.zeros(self.space().shape)
+
+#         if self.absolute:
+#             raise NotImplementedError()
+#         else:
+#             # Initialize empty data
+#             self.grid.fill(np.nan)
+
+#             # Get nearby traffic data
+#             df = pd.DataFrame.from_records(
+#                 [v.to_dict(self.observer_vehicle) for v in self.env.road.vehicles])
+#             # Normalize
+#             df = self.normalize(df)
+#             # Fill-in features
+#             for layer, feature in enumerate(self.features):
+#                 if feature in df.columns:  # A vehicle feature
+#                     for _, vehicle in df[::-1].iterrows():
+#                         x, y = vehicle["x"], vehicle["y"]
+#                         # Recover unnormalized coordinates for cell index
+#                         if "x" in self.features_range:
+#                             x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
+#                         if "y" in self.features_range:
+#                             y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
+#                         cell = self.pos_to_index((x, y), relative=not self.absolute)
+#                         if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+#                             self.grid[layer, cell[1], cell[0]] = vehicle[feature]
+#                 elif feature == "on_road":
+#                     self.fill_road_layer_by_lanes(layer)
+
+#             obs = self.grid
+
+#             if self.clip:
+#                 obs = np.clip(obs, -1, 1)
+
+#             if self.as_image:
+#                 obs = ((np.clip(obs, -1, 1) + 1) / 2 * 255).astype(np.uint8)
+
+#             obs = np.nan_to_num(obs).astype(self.space().dtype)
+
+#             return obs
+
+#     def pos_to_index(self, position: Vector, relative: bool = False) -> Tuple[int, int]:
+#         """
+#         Convert a world position to a grid cell index
+
+#         If align_to_vehicle_axes the cells are in the vehicle's frame, otherwise in the world frame.
+
+#         :param position: a world position
+#         :param relative: whether the position is already relative to the observer's position
+#         :return: the pair (i,j) of the cell index
+#         """
+#         if not relative:
+#             position -= self.observer_vehicle.position
+#         if self.align_to_vehicle_axes:
+#             c, s = np.cos(self.observer_vehicle.heading), np.sin(self.observer_vehicle.heading)
+#             position = np.array([[c, s], [-s, c]]) @ position
+#         return int(np.floor((position[0] - self.grid_size[0, 0]) / self.grid_step[0])),\
+#                int(np.floor((position[1] - self.grid_size[1, 0]) / self.grid_step[1]))
+
+#     def index_to_pos(self, index: Tuple[int, int]) -> np.ndarray:
+
+#         position = np.array([
+#             (index[1] + 0.5) * self.grid_step[0] + self.grid_size[0, 0],
+#             (index[0] + 0.5) * self.grid_step[1] + self.grid_size[1, 0]
+#         ])
+#         if self.align_to_vehicle_axes:
+#             c, s = np.cos(-self.observer_vehicle.heading), np.sin(-self.observer_vehicle.heading)
+#             position = np.array([[c, s], [-s, c]]) @ position
+
+#         position += self.observer_vehicle.position
+#         return position
+
+#     def fill_road_layer_by_lanes(self, layer_index: int, lane_perception_distance: float = 100) -> None:
+#         """
+#         A layer to encode the onroad (1) / offroad (0) information
+
+#         Here, we iterate over lanes and regularly placed waypoints on these lanes to fill the corresponding cells.
+#         This approach is faster if the grid is large and the road network is small.
+
+#         :param layer_index: index of the layer in the grid
+#         :param lane_perception_distance: lanes are rendered +/- this distance from vehicle location
+#         """
+#         lane_waypoints_spacing = np.amin(self.grid_step)
+#         road = self.env.road
+
+#         for _from in road.network.graph.keys():
+#             for _to in road.network.graph[_from].keys():
+#                 for lane in road.network.graph[_from][_to]:
+#                     origin, _ = lane.local_coordinates(self.observer_vehicle.position)
+#                     waypoints = np.arange(origin - lane_perception_distance,
+#                                             origin + lane_perception_distance,
+#                                             lane_waypoints_spacing).clip(0, lane.length)
+#                     for waypoint in waypoints:
+#                         cell = self.pos_to_index(lane.position(waypoint, 0))
+#                         if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+#                             self.grid[layer_index, cell[1], cell[0]] = 1
+
+#     def fill_road_layer_by_cell(self, layer_index) -> None:
+#         """
+#         A layer to encode the onroad (1) / offroad (0) information
+
+#         In this implementation, we iterate the grid cells and check whether the corresponding world position
+#         at the center of the cell is onroad/offroad. This approach is faster if the grid is small and the road network large.
+#         """
+#         road = self.env.road
+#         for i, j in product(range(self.grid.shape[-2]), range(self.grid.shape[-1])):
+#             for _from in road.network.graph.keys():
+#                 for _to in road.network.graph[_from].keys():
+#                     for lane in road.network.graph[_from][_to]:
+#                         if lane.on_lane(self.index_to_pos((i, j))):
+#                             self.grid[layer_index, i, j] = 1
