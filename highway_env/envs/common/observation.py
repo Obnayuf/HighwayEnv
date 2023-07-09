@@ -6,6 +6,7 @@ from gymnasium import spaces
 import numpy as np
 import pandas as pd
 import math
+import pdb
 
 from highway_env import utils
 from highway_env.envs.common.finite_mdp import compute_ttc_grid
@@ -282,13 +283,13 @@ class OccupancyGridObservation(ObservationType):
         self.tmp = None
 
     def space(self) -> spaces.Space:
-        vector_shape = np.array(self.scales).shape
-        return  spaces.Dict(dict(
-                desired_goal=spaces.Box(-np.inf, np.inf, shape=vector_shape, dtype=np.float64),
-                achieved_goal=spaces.Box(-np.inf, np.inf, shape=vector_shape ,dtype=np.float64),
-                observation=spaces.Dict(dict(image=spaces.Box(-np.inf,np.inf,shape=self.grid.shape,dtype=np.float32),
-                                             vector = spaces.Box(-np.inf,np.inf,shape=vector_shape,dtype=np.float64))),
-            ))
+
+        return spaces.Dict(dict(
+            desired_goal=spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float64),
+            achieved_goal=spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float64),
+            observation=spaces.Box(-np.inf, np.inf, shape=(400006,), dtype=np.float64),
+        ))
+
         # if self.as_image:
         #     return spaces.Box(shape=self.grid.shape, low=0, high=255, dtype=np.uint8)
         # else:
@@ -487,10 +488,12 @@ class OccupancyGridObservation(ObservationType):
         feature = ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h']                      
         obs_state = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[feature])
         goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[feature])
-        obs_map = np.nan_to_num(obs).astype(self.space().dtype)
-        obs = {}
-        obs["vector"] = obs_state / self.scales
-        obs["image"] = obs_map
+        obs_image = np.nan_to_num(obs).astype(self.space().dtype)
+
+        obs_image = obs_image.flatten()
+        #pdb.set_trace()
+        obs_state = obs_state / self.scales
+        obs = np.concatenate((obs_image,obs_state))
         obs = OrderedDict([
             ("observation",obs),
             ("achieved_goal", obs_state / self.scales),
