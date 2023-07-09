@@ -282,10 +282,17 @@ class OccupancyGridObservation(ObservationType):
         self.tmp = None
 
     def space(self) -> spaces.Space:
-        if self.as_image:
-            return spaces.Box(shape=self.grid.shape, low=0, high=255, dtype=np.uint8)
-        else:
-            return spaces.Box(shape=self.grid.shape, low=-np.inf, high=np.inf, dtype=np.float32)
+        vector_shape = np.array(self.scales).shape
+        return  spaces.Dict(dict(
+                desired_goal=spaces.Box(-np.inf, np.inf, shape=vector_shape, dtype=np.float64),
+                achieved_goal=spaces.Box(-np.inf, np.inf, shape=vector_shape ,dtype=np.float64),
+                observation=spaces.Dict(dict(image=spaces.Box(-np.inf,np.inf,shape=self.grid.shape,dtype=np.float32),
+                                             vector = spaces.Box(-np.inf,np.inf,shape=vector_shape,dtype=np.float64))),
+            ))
+        # if self.as_image:
+        #     return spaces.Box(shape=self.grid.shape, low=0, high=255, dtype=np.uint8)
+        # else:
+        #     return spaces.Box(shape=self.grid.shape, low=-np.inf, high=np.inf, dtype=np.float32)
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -481,9 +488,11 @@ class OccupancyGridObservation(ObservationType):
         obs_state = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[feature])
         goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[feature])
         obs_map = np.nan_to_num(obs).astype(self.space().dtype)
+        obs = {}
+        obs["vector"] = obs_state / self.scales
+        obs["image"] = obs_map
         obs = OrderedDict([
-            ("map_observation",obs_map),
-            ("observation", obs_state / self.scales),
+            ("observation",obs),
             ("achieved_goal", obs_state / self.scales),
             ("desired_goal", goal / self.scales)
          ])
