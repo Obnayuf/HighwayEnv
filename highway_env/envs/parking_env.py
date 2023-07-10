@@ -88,7 +88,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 "type": "OccupancyGrid",
                 "features": ['presence'],
                 "grid_size": [[-25, 25], [-40, 40]],
-                "grid_step": [0.1, 0.1],
+                "grid_step": [0.5, 0.5],
                 "as_image": False,
                 "align_to_vehicle_axes": False,
                 "clip": False,
@@ -96,7 +96,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
             "action": {
                 "type": "ContinuousAction"
             },
-            "reward_weights": [1, 1, 0.1, 0.1, 0.02, 0.02],
+            "reward_weights": [1, 0.3, 0, 0, 0.02, 0.02],
             "success_goal_reward": 0.12,
             "collision_reward": -5,
             "steering_range": np.deg2rad(45),

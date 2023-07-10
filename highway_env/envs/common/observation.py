@@ -283,12 +283,10 @@ class OccupancyGridObservation(ObservationType):
         self.tmp = None
 
     def space(self) -> spaces.Space:
+        total_shape = len(self.scales)+(self.grid_size[0][-1]/self.grid_step[0])*((self.grid_size[1][-1]/self.grid_step[0]))
 
-        return spaces.Dict(dict(
-            desired_goal=spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float64),
-            achieved_goal=spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float64),
-            observation=spaces.Box(-np.inf, np.inf, shape=(400006,), dtype=np.float64),
-        ))
+        return spaces.Box(-np.inf, np.inf, shape=(int(total_shape),), dtype=np.float64)
+
 
         # if self.as_image:
         #     return spaces.Box(shape=self.grid.shape, low=0, high=255, dtype=np.uint8)
@@ -344,7 +342,7 @@ class OccupancyGridObservation(ObservationType):
         p3_new = self.rotate(x,y,p3[0],p3[1],theta)
         p4_new = self.rotate(x,y,p4[0],p4[1],theta)
         pologon = Polygon([p1_new,p2_new,p3_new,p4_new])
-        k = self.grid_size[0]
+        kdao = int(1/self.grid_step[0])
 
         #找到框住egocar的框
         x_list = [p1_new[0],p2_new[0],p3_new[0],p4_new[0]]
@@ -355,15 +353,17 @@ class OccupancyGridObservation(ObservationType):
         ymax = int(self.quzheng(max(y_list)))
         #pdb.set_trace()
         tmp = []
-        for x in np.arange(xmin,xmax+1,0.1):
-            for y in np.arange(ymin,ymax+1,0.1):
+        length = self.grid_size[-1][-1]
+        width = self.grid_size[0][-1]
+        for x in np.arange(xmin,xmax+1,1/kdao):
+            for y in np.arange(ymin,ymax+1,1/kdao):
                 #pdb.set_trace()
                 x_ = round(x,1)
                 y_ = round(y,1)
                 point = Point(x,y)
                 if pologon.contains(point):
-                    x_ = 400 + int(x_*10)
-                    y_ = 250 + int(y_*10)
+                    x_ = length*kdao + int(x_*kdao)
+                    y_ = width *kdao + int(y_*kdao)
                     self.grid[0,y_,x_] = 2
                     tmp.append((x_,y_))
         return tmp
@@ -371,19 +371,23 @@ class OccupancyGridObservation(ObservationType):
     def initialize(self):
         self.grid.fill(np.nan)
         # Get nearby traffic data
+        length = self.grid_size[-1][-1]
+        width = self.grid_size[0][-1]
+        assert self.grid_step[0] == self.grid_step[1]
+        kao = int(1/self.grid_step[0])
         df = pd.DataFrame.from_records(
                 [v.to_dict() for v in self.env.road.vehicles])
         # Normalize
         df = self.normalize(df)
-        for i in range(-210,211):
-            self.grid[0,250+i,50] = 1
-            self.grid[0,250+i,750] = 1
-        for i in range(-350,351):
-            self.grid[0,-210+250,i+400] = 1
-            self.grid[0,210+250,i+400] = 1
+        for i in range(-21*kao,1+21*kao):
+            self.grid[0,i+width*kao,(length-35)*kao] = 1
+            self.grid[0,width*kao+i,(length+35)*kao] = 1
+        for i in range(-35*kao,1+35*kao):
+            self.grid[0,(-21+width)*kao,i+length*kao] = 1
+            self.grid[0,(21+width)*kao,i+length*kao] = 1
 
-        row = 4/self.grid_step[0]
-        col = 2/self.grid_step[0]
+        row = 4*kao
+        col = 2*kao
 
         for layer, feature in enumerate(self.features):
                 if feature in df.columns:  # A vehicle feature
@@ -400,7 +404,7 @@ class OccupancyGridObservation(ObservationType):
                             if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
                                 for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
                                     for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
-                                            if i<500 and j<800: 
+                                            if i<2*width*kao and j<2*length*kao: 
                                                 self.grid[layer,i,j] = vehicle[feature]
 
 
@@ -410,7 +414,7 @@ class OccupancyGridObservation(ObservationType):
         if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
             for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
                 for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
-                        if i<500 and j<800: 
+                        if i<2*width*kao and j<2*length*kao: 
                             self.grid[layer,i,j] = -1
         self.is_initialized = True
     
@@ -494,11 +498,11 @@ class OccupancyGridObservation(ObservationType):
         #pdb.set_trace()
         obs_state = obs_state / self.scales
         obs = np.concatenate((obs_image,obs_state))
-        obs = OrderedDict([
-            ("observation",obs),
-            ("achieved_goal", obs_state / self.scales),
-            ("desired_goal", goal / self.scales)
-         ])
+        # obs = OrderedDict([
+        #     ("observation",obs),
+        #     ("achieved_goal", obs_state / self.scales),
+        #     ("desired_goal", goal / self.scales)
+        #  ])
         return obs
 
     def pos_to_index(self, position: Vector, relative: bool = False) -> Tuple[int, int]:
