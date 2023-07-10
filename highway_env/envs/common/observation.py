@@ -283,7 +283,7 @@ class OccupancyGridObservation(ObservationType):
         self.tmp = None
 
     def space(self) -> spaces.Space:
-        total_shape = len(self.scales)+(self.grid_size[0][-1]/self.grid_step[0])*((self.grid_size[1][-1]/self.grid_step[0]))
+        total_shape = len(self.scales)+4*(self.grid_size[0][-1]/self.grid_step[0])*((self.grid_size[1][-1]/self.grid_step[0]))
 
         return spaces.Box(-np.inf, np.inf, shape=(int(total_shape),), dtype=np.float64)
 
