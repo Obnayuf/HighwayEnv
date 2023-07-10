@@ -496,7 +496,7 @@ class OccupancyGridObservation(ObservationType):
 
         obs_image = obs_image.flatten()
         #pdb.set_trace()
-        obs_state = obs_state / self.scales
+        obs_state = (obs_state-goal) / self.scales
         obs = np.concatenate((obs_image,obs_state))
         # obs = OrderedDict([
         #     ("observation",obs),
