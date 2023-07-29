@@ -271,8 +271,8 @@ class OccupancyGridObservation(ObservationType):
         self.features = features if features is not None else self.FEATURES
         self.grid_size = np.array(grid_size) if grid_size is not None else np.array(self.GRID_SIZE)
         self.grid_step = np.array(grid_step) if grid_step is not None else np.array(self.GRID_STEP)
-        grid_shape = np.asarray(np.floor((self.grid_size[:, 1] - self.grid_size[:, 0]) / self.grid_step),dtype=int)
-        self.grid = np.zeros((len(self.features), *grid_shape))
+        self.grid_shape = np.asarray(np.floor((self.grid_size[:, 1] - self.grid_size[:, 0]) / self.grid_step),dtype=int)
+        self.grid = np.zeros((len(self.features), *self.grid_shape))
         self.features_range = features_range
         self.absolute = absolute
         self.align_to_vehicle_axes = align_to_vehicle_axes
@@ -283,9 +283,19 @@ class OccupancyGridObservation(ObservationType):
         self.tmp = None
 
     def space(self) -> spaces.Space:
+<<<<<<< Updated upstream
         total_shape = len(self.scales)+4*(self.grid_size[0][-1]/self.grid_step[0])*((self.grid_size[1][-1]/self.grid_step[0]))
 
         return spaces.Box(-np.inf, np.inf, shape=(int(total_shape),), dtype=np.float64)
+=======
+        try:
+            return spaces.Dict(dict(
+                image=spaces.Box(shape=self.grid.shape, low=-np.inf, high=np.inf, dtype=np.float32),
+                vector=spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float64),
+            ))
+        except AttributeError:
+            return spaces.Space()
+>>>>>>> Stashed changes
 
 
         # if self.as_image:
@@ -364,7 +374,7 @@ class OccupancyGridObservation(ObservationType):
                 if pologon.contains(point):
                     x_ = length*kdao + int(x_*kdao)
                     y_ = width *kdao + int(y_*kdao)
-                    self.grid[0,y_,x_] = 2
+                    self.grid[0,y_,x_] = 0.5 #2 ego car
                     tmp.append((x_,y_))
         return tmp
     
@@ -379,6 +389,7 @@ class OccupancyGridObservation(ObservationType):
                 [v.to_dict() for v in self.env.road.vehicles])
         # Normalize
         df = self.normalize(df)
+        #墙体碰撞
         for i in range(-21*kao,1+21*kao):
             self.grid[0,i+width*kao,(length-35)*kao] = 1
             self.grid[0,width*kao+i,(length+35)*kao] = 1
@@ -404,10 +415,11 @@ class OccupancyGridObservation(ObservationType):
                             if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
                                 for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
                                     for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
+                                            #other cars 碰撞 1
                                             if i<2*width*kao and j<2*length*kao: 
                                                 self.grid[layer,i,j] = vehicle[feature]
 
-
+        # target pos 
         centerx = self.env.road.objects[0].to_dict()["x"]
         centery = self.env.road.objects[0].to_dict()["y"]
         cell = self.pos_to_index((centerx, centery), relative=False)
@@ -415,18 +427,17 @@ class OccupancyGridObservation(ObservationType):
             for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
                 for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
                         if i<2*width*kao and j<2*length*kao: 
-                            self.grid[layer,i,j] = -1
+                            self.grid[layer,i,j] = 1/4
         self.is_initialized = True
     
     def recover(self,tmp):
         if tmp is not None:
             for hh in tmp:
+                # 可行走区域
                 self.grid[0,hh[1],hh[0]] = 0
         
 
     def observe(self) -> np.ndarray:                 
-        if not self.env.road:
-            return np.zeros(self.space().shape)
         if not self.is_initialized:
             self.initialize()
         self.recover(self.tmp)
@@ -434,54 +445,6 @@ class OccupancyGridObservation(ObservationType):
         x, y ,yaw = ego["x"], ego["y"], ego["heading"]
         self.tmp = self.handle_grid(x,y,yaw)
         # handle ego car
-
-        # if self.absolute:
-        #     raise NotImplementedError()
-        # else:
-        #     # Initialize empty data
-        #     self.grid.fill(np.nan)
-        #     #pdb.set_trace()
-        #     # Get nearby traffic data
-        #     df = pd.DataFrame.from_records(
-        #         [v.to_dict() for v in self.env.road.vehicles])
-        #     # Normalize
-        #     df = self.normalize(df)
-            
-        #     #pdb.set_trace()
-        #     # Fill-in features
-        #     #wall from -35 to 35 and -21 to 21
-        #     for i in range(-210,211):
-        #         self.grid[0,250+i,50] = 1
-        #         self.grid[0,250+i,750] = 1
-        #     for i in range(-350,351):
-        #         self.grid[0,-210+250,i+400] = 1
-        #         self.grid[0,210+250,i+400] = 1
-        #     for layer, feature in enumerate(self.features):
-        #         if feature in df.columns:  # A vehicle feature
-        #             for i, vehicle in df[::-1].iterrows():
-        #                 if i==0:
-        #                     x, y ,yaw = vehicle["x"], vehicle["y"], vehicle["heading"]
-        #                     self.handle_grid(x,y,yaw)
-                            
-        #                 if i>0:
-        #                     x, y = vehicle["x"], vehicle["y"]
-        #                     # Recover unnormalized coordinates for cell index
-        #                     if "x" in self.features_range:
-        #                         x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
-        #                     if "y" in self.features_range:
-        #                         y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
-        #                     cell = self.pos_to_index((x, y), relative=False)
-        #                     #pdb.set_trace()
-        #                     if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
-        #                         row = 4/self.grid_step[0]
-        #                         col = 2/self.grid_step[0]
-        #                         for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
-        #                             for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
-        #                                     if i<500 and j<800: 
-        #                                         self.grid[layer,i,j] = vehicle[feature]
-        #         elif feature == "on_road":
-        #             self.fill_road_layer_by_lanes(layer)
-
         obs = self.grid
 
         if self.clip:
@@ -492,19 +455,19 @@ class OccupancyGridObservation(ObservationType):
         feature = ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h']                      
         obs_state = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[feature])
         goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[feature])
-        obs_image = np.nan_to_num(obs).astype(self.space().dtype)
+        obs_image = np.nan_to_num(obs)
 
-        obs_image = obs_image.flatten()
         #pdb.set_trace()
-        obs_state = (obs_state-goal) / self.scales
-        obs = np.concatenate((obs_image,obs_state))
-        # obs = OrderedDict([
-        #     ("observation",obs),
-        #     ("achieved_goal", obs_state / self.scales),
-        #     ("desired_goal", goal / self.scales)
-        #  ])
+        obs_state = np.abs(obs_state-goal) / self.scales
+        obs = OrderedDict([
+            ("image",obs_image),
+            ("vector", obs_state)
+         ])
         return obs
 
+    def preprocess(obs):
+        image = obs["image"]
+        
     def pos_to_index(self, position: Vector, relative: bool = False) -> Tuple[int, int]:
         """
         Convert a world position to a grid cell index
@@ -594,14 +557,6 @@ class KinematicsGoalObservation(KinematicObservation):
             return spaces.Space()
 
     def observe(self) -> Dict[str, np.ndarray]:
-        old_obs = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[self.features])
-        ego_position = (old_obs[0],old_obs[1])
-        all_vehicles = self.env.road.vehicles
-        other_car = [0] * self.vehicles_count
-        for i in range(1,len(all_vehicles)):
-            localization = all_vehicles[i].position
-            distance = np.sqrt((localization[0]-ego_position[0])**2+(localization[1]-ego_position[1])**2)
-            other_car[i-1] = 0.5/distance
         if not self.observer_vehicle:
             return OrderedDict([
                 ("observation", np.zeros((len(self.features),))),
@@ -609,11 +564,11 @@ class KinematicsGoalObservation(KinematicObservation):
                 ("desired_goal", np.zeros((len(self.features),)))
             ])
 
-        obs = np.concatenate((old_obs/ self.scales,np.array(other_car)))
+        obs = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[self.features])
         goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[self.features])
         obs = OrderedDict([
-            ("observation", obs),
-            ("achieved_goal", old_obs / self.scales),
+            ("observation", obs / self.scales),
+            ("achieved_goal", obs / self.scales),
             ("desired_goal", goal / self.scales)
          ])
         return obs
