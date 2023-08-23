@@ -272,30 +272,24 @@ class OccupancyGridObservation(ObservationType):
         self.grid_size = np.array(grid_size) if grid_size is not None else np.array(self.GRID_SIZE)
         self.grid_step = np.array(grid_step) if grid_step is not None else np.array(self.GRID_STEP)
         self.grid_shape = np.asarray(np.floor((self.grid_size[:, 1] - self.grid_size[:, 0]) / self.grid_step),dtype=int)
-        self.grid = np.zeros((len(self.features), *self.grid_shape))
+        self.grid = np.zeros((3, *self.grid_shape))
         self.features_range = features_range
         self.absolute = absolute
         self.align_to_vehicle_axes = align_to_vehicle_axes
         self.clip = clip
         self.as_image = as_image
         self.is_initialized = False
-        self.scales = [100, 100, 5, 5, 1, 1]
+        self.scales = [10, 10, 5, 5, 1, 1]
         self.tmp = None
 
     def space(self) -> spaces.Space:
-<<<<<<< Updated upstream
-        total_shape = len(self.scales)+4*(self.grid_size[0][-1]/self.grid_step[0])*((self.grid_size[1][-1]/self.grid_step[0]))
-
-        return spaces.Box(-np.inf, np.inf, shape=(int(total_shape),), dtype=np.float64)
-=======
         try:
             return spaces.Dict(dict(
                 image=spaces.Box(shape=self.grid.shape, low=-np.inf, high=np.inf, dtype=np.float32),
-                vector=spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float64),
+                vector=spaces.Box(-np.inf, np.inf, shape=(12,), dtype=np.float64),
             ))
         except AttributeError:
             return spaces.Space()
->>>>>>> Stashed changes
 
 
         # if self.as_image:
@@ -374,7 +368,7 @@ class OccupancyGridObservation(ObservationType):
                 if pologon.contains(point):
                     x_ = length*kdao + int(x_*kdao)
                     y_ = width *kdao + int(y_*kdao)
-                    self.grid[0,y_,x_] = 0.5 #2 ego car
+                    self.grid[2,y_,x_] = 1 #2 ego car
                     tmp.append((x_,y_))
         return tmp
     
@@ -434,18 +428,92 @@ class OccupancyGridObservation(ObservationType):
         if tmp is not None:
             for hh in tmp:
                 # 可行走区域
-                self.grid[0,hh[1],hh[0]] = 0
+                self.grid[2,hh[1],hh[0]] = 0
         
+    def generate_channel_1(self):
+        self.grid.fill(np.nan)
+        # Get nearby traffic data
+        length = self.grid_size[-1][-1]
+        width = self.grid_size[0][-1]
+        assert self.grid_step[0] == self.grid_step[1]
+        kao = int(1/self.grid_step[0])
+        df = pd.DataFrame.from_records(
+                [v.to_dict() for v in self.env.road.vehicles])
+        # Normalize
+        df = self.normalize(df)
+        # add wall
+        for i in range(-21*kao,1+21*kao):
+            self.grid[0,i+width*kao,(length-35)*kao] = 1
+            self.grid[0,width*kao+i,(length+35)*kao] = 1
+        for i in range(-35*kao,1+35*kao):
+            self.grid[0,(-21+width)*kao,i+length*kao] = 1
+            self.grid[0,(21+width)*kao,i+length*kao] = 1
 
-    def observe(self) -> np.ndarray:                 
-        if not self.is_initialized:
-            self.initialize()
-        self.recover(self.tmp)
+        row = 4*kao
+        col = 2*kao
+
+        for layer, feature in enumerate(self.features):
+                if feature in df.columns:  # A vehicle feature
+                    for i, vehicle in df[::-1].iterrows():
+                        if i>0:
+                            x, y = vehicle["x"], vehicle["y"]
+                            # Recover unnormalized coordinates for cell index
+                            if "x" in self.features_range:
+                                x = utils.lmap(x, [-1, 1], [self.features_range["x"][0], self.features_range["x"][1]])
+                            if "y" in self.features_range:
+                                y = utils.lmap(y, [-1, 1], [self.features_range["y"][0], self.features_range["y"][1]])
+                            cell = self.pos_to_index((x, y), relative=True)
+                            #pdb.set_trace()
+                            if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+                                for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
+                                    for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
+                                            # add other cars 碰撞 1
+                                            if i<2*width*kao and j<2*length*kao: 
+                                                self.grid[0,i,j] = vehicle[feature]
+
+    def generate_channel_2(self):
+        # target pos 
+        centerx = self.env.road.objects[0].to_dict()["x"]
+        centery = self.env.road.objects[0].to_dict()["y"]
+        cell = self.pos_to_index((centerx, centery), relative=True)
+        length = self.grid_size[-1][-1]
+        width = self.grid_size[0][-1]
+        assert self.grid_step[0] == self.grid_step[1]
+        kao = int(1/self.grid_step[0])
+        row = 4*kao
+        col = 2*kao
+        if 0 <= cell[1] < self.grid.shape[-2] and 0 <= cell[0] < self.grid.shape[-1]:
+            for i in range(int(cell[1]-row/2),int(cell[1]+row/2)):
+                for j in range(int(cell[0]-col/2),int(cell[0]+col/2)):
+                        if i<2*width*kao and j<2*length*kao: 
+                            self.grid[1,i,j] = 1
+    
+    def generate_channel_3(self):
         ego = self.env.road.vehicles[0].to_dict()
         x, y ,yaw = ego["x"], ego["y"], ego["heading"]
         self.tmp = self.handle_grid(x,y,yaw)
-        # handle ego car
-        obs = self.grid
+
+
+    def observe(self) -> np.ndarray:
+        # prior one channel 1 表示不可碰撞，0表示可行走区域，1/4 表示target ，1/2 表示ego it seemed cnn doesn't learn anyyhing
+        # if not self.is_initialized:
+        #     self.initialize()
+        # self.recover(self.tmp)
+        # ego = self.env.road.vehicles[0].to_dict()
+        # x, y ,yaw = ego["x"], ego["y"], ego["heading"]
+        # self.tmp = self.handle_grid(x,y,yaw)
+        # # handle ego car
+        # obs = self.grid
+        self.recover(self.tmp)
+        # first channel obstacle include: wall and other car 
+        self.generate_channel_1()
+
+        # second channel target plot pos
+        self.generate_channel_2()
+
+        # third channel  ego car pos which need reset
+        self.generate_channel_3()
+
 
         if self.clip:
             obs = np.clip(obs, -1, 1)
@@ -455,18 +523,17 @@ class OccupancyGridObservation(ObservationType):
         feature = ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h']                      
         obs_state = np.ravel(pd.DataFrame.from_records([self.observer_vehicle.to_dict()])[feature])
         goal = np.ravel(pd.DataFrame.from_records([self.env.goal.to_dict()])[feature])
-        obs_image = np.nan_to_num(obs)
+        
 
-        #pdb.set_trace()
-        obs_state = np.abs(obs_state-goal) / self.scales
+        obs_image = np.nan_to_num(self.grid)
+        # obs_state[-1] = abs(obs_state[-1])
+        # goal[-1] = abs(goal[-1])
+        obs_state = np.append(obs_state / self.scales,goal / self.scales)
         obs = OrderedDict([
             ("image",obs_image),
             ("vector", obs_state)
          ])
         return obs
-
-    def preprocess(obs):
-        image = obs["image"]
         
     def pos_to_index(self, position: Vector, relative: bool = False) -> Tuple[int, int]:
         """

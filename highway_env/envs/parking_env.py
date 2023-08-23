@@ -67,7 +67,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
     PARKING_OBS = {"observation": {
             "type": "KinematicsGoal",
             "features": ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h'],
-            "scales": [100, 100, 5, 5, 1, 1],
+            "scales": [10, 10, 5, 5, 1, 1],
             "normalize": False
         }}
 
@@ -96,11 +96,11 @@ class ParkingEnv(AbstractEnv, GoalEnv):
             "action": {
                 "type": "ContinuousAction"
             },
-            "reward_weights": [1, 0.3, 0, 0, 0.02, 0.02],
+            "reward_weights": [2, 2, 0.3, 0.3, 1, 1],
             "success_goal_reward": 0.12,
             "collision_reward": -5,
             "steering_range": np.deg2rad(45),
-            "simulation_frequency": 15,
+            "simulation_frequency": 5,
             "policy_frequency": 5,
             "duration": 100,
             "screen_width": 1000,
@@ -133,6 +133,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
     def _reset(self):
         self._create_road()
         self._create_vehicles()
+        self._prior_shaping = None
 
     def _create_road(self, spots: int = 14) -> None:
         """
@@ -161,7 +162,8 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         self.controlled_vehicles = []
         for i in range(self.config["controlled_vehicles"]):
             # 2*np.pi*self.np_random.uniform()
-            vehicle = self.action_type.vehicle_class(self.road, [i*20, 0], 2*np.pi*self.np_random.uniform(), 0)
+            yaw = 2*np.pi*self.np_random.uniform()
+            vehicle = self.action_type.vehicle_class(self.road, [i*20, 0], yaw, 0)
             vehicle.color = VehicleGraphics.EGO_COLOR
             self.road.vehicles.append(vehicle)
             self.controlled_vehicles.append(vehicle)
@@ -212,7 +214,23 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         :param p: the Lp^p norm used in the reward. Use p<1 to have high kurtosis for rewards in [0, 1]
         :return: the corresponding reward
         """
-        return -np.power(np.dot(np.abs(achieved_goal - desired_goal), np.array(self.config["reward_weights"])), p)
+        reward = 0
+        if self._is_success(achieved_goal,desired_goal):
+            reward += 100
+        achieved_goal[-1] = abs(achieved_goal[-1])
+        desired_goal[-1] = abs(desired_goal[-1])
+        achieved_goal[-2] = abs(achieved_goal[-2])
+        desired_goal[-2] = abs(desired_goal[-2])
+        curr_shaping = (achieved_goal - desired_goal)**2
+        # scale [100, 100, 5, 5, 1, 1] ['x', 'y', 'vx', 'vy', 'cos_h', 'sin_h'] 
+        #goal_limit = np.array([])
+        # if np.abs(achieved_goal - desired_goal)<np.array([])
+        if self._prior_shaping is None:
+            reward = 0
+        else:
+            reward = 2 * np.dot((self._prior_shaping - curr_shaping) , np.array(self.config["reward_weights"]))
+        self._prior_shaping = curr_shaping
+        return reward
 
     def _reward(self, action: np.ndarray) -> float:
         obs = self.observation_type_parking.observe()
@@ -222,7 +240,21 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         return reward
 
     def _is_success(self, achieved_goal: np.ndarray, desired_goal: np.ndarray) -> bool:
-        return self.compute_reward(achieved_goal, desired_goal, {}) > -self.config["success_goal_reward"]
+        angle_ok = False
+        pos_ok = False
+        angle_limit = 15/57.3
+        cos_offset = np.sin(angle_limit)
+        sin_offset = np.cos(angle_limit) 
+        cos_h = achieved_goal[-2]
+        sin_h = achieved_goal[-1]
+        if abs(cos_h)<cos_offset and sin_offset<abs(sin_h)<=1:
+            angle_ok = True
+        scale = self.observation_type_parking.scales
+        pos_x = achieved_goal[0] - desired_goal[0]
+        pos_y = achieved_goal[1] - desired_goal[1]
+        if abs(pos_x*scale[0])<0.75 and abs(pos_y*scale[1])<1:
+            pos_ok = True
+        return angle_ok and pos_ok
 
     def _is_terminated(self) -> bool:
         """The episode is over if the ego vehicle crashed or the goal is reached or time is over."""
